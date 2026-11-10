@@ -1,0 +1,1876 @@
+// Prisma schema for FUTH LAFIA HR System
+// FEDERAL UNIVERSITY TEACHING HOSPITAL - Human Resources Management & Registry System
+//
+// === SETUP INSTRUCTIONS ===
+//
+// LOCAL (SQLite — default):
+//   .env:  DATABASE_URL="file:./db/custom.db"
+//   Run:   bunx prisma db push && bunx prisma generate
+//   Start: bun run dev
+//
+// CLOUD (MySQL):
+//   .env:  DATABASE_URL="mysql://user:pass@host:3306/futh_hr"
+//   Change "provider = sqlite" to "provider = mysql" below
+//   Run:   bunx prisma db push && bunx prisma generate
+//   Import data: mysql -u root -p futh_hr < futh_hr_mysql_dump.sql
+//   Start: bun run start
+// ===============================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // For SQLite (local):   provider = "mysql"
+  // For MySQL (cloud):    change to provider = "mysql"
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// CORE: USERS, ROLES, DEPARTMENTS, DESIGNATIONS, STAFF
+// ============================================================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  username     String   @unique
+  passwordHash String
+  fullName     String
+  phone        String?
+  avatarUrl    String?
+
+  // Role: SUPER_ADMIN, ADMIN, CMD, CMA, AD, HOD, HOU, DFA, APPRAISAL_OFFICER, REGISTRY_OFFICER, STAFF
+  role String @default("STAFF")
+
+  // === Role-switching ===
+  // Primary role is stored in `role`. Secondary roles (a user may have multiple
+  // designations / functions) are stored here as a comma-separated list. The user
+  // can switch their active role at runtime to any in this list (or back to `role`).
+  secondaryRoles String? // comma-separated list of role codes, e.g. "HOD,APPRAISAL_OFFICER"
+  activeRoleOverride String? // if set, the UI uses this as the active role instead of `role`
+
+  // === Two-Factor Authentication (TOTP) ===
+  twoFactorEnabled       Boolean  @default(false)
+  twoFactorSecret        String?  // TOTP secret (base32)
+  twoFactorRecoveryCodes String?  // JSON array of 8 single-use recovery codes (bcrypt-hashed)
+  twoFactorEnforcedAt    DateTime? // when 2FA was enforced (for executive roles)
+  twoFactorLastUsedAt    DateTime? // last time a 2FA code was verified
+
+  // Links
+  staffId       String? @unique
+  staff         Staff?       @relation("UserStaff", fields: [staffId], references: [id])
+  designationId String?
+  designation   Designation? @relation("UserDesignation", fields: [designationId], references: [id])
+  departmentId  String?
+  department    Department?  @relation(fields: [departmentId], references: [id])
+  unitId        String?
+  unit          Unit?         @relation("UserUnit", fields: [unitId], references: [id])
+
+  // Departments headed
+  headedDepartment Department? @relation("DeptHOD")
+
+  // Units headed
+  headedUnit Unit? @relation("UnitHOU")
+
+  isActive   Boolean  @default(true)
+  lastLoginAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Mail
+  sentMail     MailMessage[] @relation("MailFrom")
+  receivedMail MailMessage[] @relation("MailTo")
+
+  // Requisitions
+  requisitionsCreated    Requisition[]    @relation("ReqCreator")
+  requisitionsAssigned   Requisition[]    @relation("ReqAssignee")
+  requisitionsClosedBy   Requisition[]    @relation("ReqClosedBy")
+  reqTargetUser          Requisition[]    @relation("ReqTargetUser")
+  requisitionRoutesFrom  RequisitionRoute[] @relation("RouteFromUser")
+  requisitionRoutesTo    RequisitionRoute[] @relation("RouteToUser")
+  requisitionComments    RequisitionComment[]
+
+  // Files
+  filesCreated      RegistryFile[]    @relation("FileCreator")
+  filesCurrent      RegistryFile[]    @relation("FileCurrentHolder")
+  fileTargetUser    RegistryFile[]    @relation("FileTargetUser")
+  fileRoutesFrom    FileRoute[]      @relation("FileRouteFromUser")
+  fileRoutesTo      FileRoute[]      @relation("FileRouteToUser")
+  fileComments      FileComment[]
+
+  // Leaves
+  leavesCurrentHolder Leave[]       @relation("LeaveCurrentHolder")
+  leaveRoutesFrom     LeaveRoute[]  @relation("LeaveRouteFromUser")
+  leaveRoutesTo       LeaveRoute[]  @relation("LeaveRouteToUser")
+
+  // Notifications
+  notifications Notification[] @relation("NotifUser")
+
+  // Audit
+  auditLogs AuditLog[] @relation("AuditUser")
+
+  // Documents uploaded by this user
+  documentsUploaded Document[] @relation("DocumentUploader")
+
+  // Role-page permissions (for this user's role)
+  rolePermissions RolePagePermission[] @relation("UserRolePerms")
+
+  // Committee leadership
+  chairOfCommittees Committee[] @relation("CommitteeChair")
+  secretaryOfCommittees Committee[] @relation("CommitteeSecretary")
+
+  // Committee members added by this user (audit)
+  committeeMembersAdded CommitteeMember[] @relation("CommitteeMemberAddedBy")
+
+  // Password resets — requests submitted for this user, and requests resolved by this admin
+  passwordResetRequests  PasswordResetRequest[]
+  passwordResetsResolved PasswordResetRequest[] @relation("PasswordResetResolvedBy")
+
+  // PV comments
+  pvComments PVComment[]
+
+  @@index([role])
+  @@map("users")
+}
+
+// ============================================================
+// PAGES, ROLES, PERMISSIONS — for Users Management module
+// ============================================================
+
+// A "Page" represents a navigable module/view in the app.
+model Page {
+  id          String   @id @default(cuid())
+  key         String   @unique // matches ViewKey in Sidebar.tsx (dashboard, requisitions, etc.)
+  name        String   // human-readable name (e.g. "Requisitions")
+  description String?
+  icon        String?  // lucide icon name
+  category    String   @default("Main") // Main | Admin | Executive | HR
+  sortOrder   Int      @default(100)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Permissions granted to roles for this page
+  rolePermissions RolePagePermission[] @relation("PageRolePerms")
+  @@map("pages")
+}
+
+// A "Role" mirrors the role string on User — but lets admins manage
+// which roles exist, their display names, and rank.
+model Role {
+  id          String   @id @default(cuid())
+  code        String   @unique // SUPER_ADMIN, ADMIN, CMD, CMA, AD, HOD, HOU, DFA, APPRAISAL_OFFICER, REGISTRY_OFFICER, STAFF
+  name        String   // Human-readable name
+  description String?
+  rank        Int      @default(100) // higher = more senior
+  level       String   @default("staff") // executive | directorate | management | officer | staff
+  isSystem    Boolean  @default(false) // true for built-in roles — prevents deletion
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Permissions granted to this role (across pages)
+  rolePermissions RolePagePermission[] @relation("RolePagePerms")
+  @@map("roles")
+}
+
+// Junction table: which role can access which page, and with what actions.
+model RolePagePermission {
+  id        String   @id @default(cuid())
+  roleId    String
+  pageId    String
+  role      Role     @relation("RolePagePerms", fields: [roleId], references: [id], onDelete: Cascade)
+  page      Page     @relation("PageRolePerms", fields: [pageId], references: [id], onDelete: Cascade)
+
+  canView   Boolean  @default(true)
+  canCreate Boolean  @default(false)
+  canEdit   Boolean  @default(false)
+  canDelete Boolean  @default(false)
+
+  // Audit
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Optional back-ref to a user who last modified (audit only)
+  updatedBy User? @relation("UserRolePerms", fields: [createdById], references: [id])
+
+  @@unique([roleId, pageId])
+  @@index([roleId])
+  @@index([pageId])
+  @@map("role_page_permissions")
+}
+
+model Department {
+  id        String  @id @default(cuid())
+  code      String  @unique
+  name      String
+  faculty   String?
+  hodUserId String? @unique
+  hodUser   User?   @relation("DeptHOD", fields: [hodUserId], references: [id])
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users        User[]
+  staff        Staff[]
+  designations Designation[]
+  files        RegistryFile[]
+  requisitions Requisition[]
+  units        Unit[]
+  trainings    Training[]
+  projects     Project[]
+  postingsTo   PostingTransfer[]
+  @@map("departments")
+}
+
+// Unit — a sub-division of a Department. E.g. ICU Unit under Internal Medicine,
+// Library Unit under Academic Affairs, etc.
+model Unit {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  houUserId   String?  @unique
+  houUser     User?     @relation("UnitHOU", fields: [houUserId], references: [id])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  staff    Staff[]
+  projects Project[]
+  postingsTo PostingTransfer[]
+  users    User[]   @relation("UserUnit")
+
+  @@index([departmentId])
+  @@map("units")
+}
+
+// Designations = Roles/positions in the institution hierarchy.
+// Default seeded designations: CMD, CMA, AD, HOD, HOU, DFA, APPRAISAL_OFFICER, REGISTRY_OFFICER, STAFF
+model Designation {
+  id          String  @id @default(cuid())
+  code        String  @unique // e.g. CMD, CMA, AD, HOD, HOU, DFA, AO, REG, STF
+  name        String  // e.g. "Chief Medical Director"
+  description String?
+  rank        Int     @default(100) // higher = more senior (CMD=1000, CMA=900, AD=800, HOD=700, HOU=600, DFA=500, AO=400, REG=300, STF=100)
+  level       String @default("staff") // executive | directorate | management | officer | staff
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  department   Department? @relation(fields: [departmentId], references: [id])
+  departmentId String?
+
+  // Routing targets
+  reqTargets       Requisition[]       @relation("ReqTargetDesignation")
+  reqRouteTargets RequisitionRoute[]   @relation("RouteToDesignation")
+  fileTargets      RegistryFile[]      @relation("FileTargetDesignation")
+  fileRouteTargets FileRoute[]         @relation("FileRouteToDesignation")
+
+  // Staff with this designation
+  staff          Staff[]               @relation("StaffDesignation")
+
+  // Posting/Transfer target designation
+  postingsTo PostingTransfer[]
+
+  // Users with this designation (one-to-many back-rel)
+  users          User[]                @relation("UserDesignation")
+  @@map("designations")
+}
+
+model Staff {
+  id            String   @id @default(cuid())
+  staffId       String   @unique // FUTH internal staff number e.g. ICT/001
+  ippisNumber   String?
+
+  // === Identity ===
+  surname       String
+  firstName     String
+  otherNames    String?
+  fullName      String
+  gender        String? // Male | Female
+  dateOfBirth   DateTime?
+  maritalStatus String? // Single | Married | Divorced | Widowed
+  nationality   String? @default("Nigerian")
+  stateOfOrigin String?
+  lga           String?
+  religion      String?
+
+  // === Government / Compliance numbers ===
+  ninNumber     String?  // National Identification Number
+  tinNumber     String?  // Tax Identification Number
+  pensionNumber String?  // Pension PIN
+  nhfNumber     String?  // National Housing Fund
+  nhisNumber    String?  // National Health Insurance Scheme
+
+  // === Contact ===
+  email         String?
+  phone         String?
+  altPhone      String?
+
+  // === Employment ===
+  position      String?
+  rank          String?
+  employmentType String? @default("permanent") // permanent | contract | temp | intern
+  fileNumber    String?  // Staff file number — manually set by Registry (not auto-generated)
+  gradeLevel    String?  // Grade level (e.g. "5", "8", "12") — from IPPIS nominal roll
+  step          String?  // Step within grade level (e.g. "1", "2", "3")
+  cadre         String?  // Cadre (e.g. "SNR DATA P. ASST. I") — from IPPIS nominal roll
+  dateHired     DateTime?
+  confirmationDate DateTime?
+  retirementDate DateTime?
+  status        String   @default("active") // active | on_leave | suspended | retired | disengaged
+
+  // === Biometrics & uploads ===
+  avatarUrl     String?  // passport photo
+  signatureUrl String?  // signature image
+  thumbprintUrl String? // thumbprint / biometric capture
+  pictureUrl    String? // additional photo (profile)
+
+  // === Address ===
+  residentialAddress String?
+  permanentAddress   String?
+  cityOfResidence    String?
+  stateOfResidence   String?
+
+  // === Department, Unit & Designation ===
+  departmentId  String?
+  department    Department? @relation(fields: [departmentId], references: [id])
+
+  unitId        String?
+  unit          Unit?        @relation(fields: [unitId], references: [id])
+
+  designationId String?
+  designation   Designation? @relation("StaffDesignation", fields: [designationId], references: [id])
+
+  userId        String?  @unique
+  user          User?    @relation("UserStaff")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // === Related records ===
+  nextOfKin       NextOfKin[]
+  bankDetails    BankDetail[]
+  academicBackground AcademicBackground[]
+  dependants      Dependant[]
+
+  // Appraisal & review records
+  duties           Duty[]
+  annualReviews     AnnualReview[]
+  monthlyAppraisals MonthlyAppraisal[]
+  quarterlyReviews QuarterlyReview[]
+  assessments       Assessment[]
+  appraisals        Appraisal[]
+  leaves            Leave[]
+
+  // HR lifecycle
+  promotions        Promotion[]
+  terminations      Termination[]
+  resignations      Resignation[]
+  retirements       Retirement[]
+
+  // Posting & Transfer
+  postingsTransfers PostingTransfer[]
+
+  // Training & Projects
+  trainingEnrollments TrainingEnrollment[]
+  projectMemberships   ProjectMember[]
+
+  // Documents linked to this staff record (e.g. personal image/signature, hardcopy scans)
+  documents Document[]
+
+  // Committee memberships — proper m2m via CommitteeMember join table
+  committeeMemberships CommitteeMember[]
+
+  @@index([departmentId])
+  @@index([status])
+  @@index([ninNumber])
+  @@index([pensionNumber])
+  @@map("staff")
+}
+
+// ============================================================
+// STAFF ENRICHMENT — Next of Kin, Bank, Academic, Dependants
+// ============================================================
+
+model NextOfKin {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  fullName    String
+  relationship String? // Spouse | Child | Parent | Sibling | Other
+  gender      String?
+  phone       String?
+  email       String?
+  address     String?
+  city        String?
+  state       String?
+  occupation  String?
+  employerName String?
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([staffId])
+  @@map("next_of_kin")
+}
+
+model BankDetail {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  bankName    String
+  accountName String
+  accountNumber String
+  accountType String?  @default("Savings") // Savings | Current | Salary
+  branch      String?
+  sortCode    String?
+  bvnNumber   String?  // Bank Verification Number
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([staffId])
+  @@map("bank_details")
+}
+
+model AcademicBackground {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  institution String
+  qualification String? // SSCE | ND | HND | BSc | MSc | PhD | MBBS | Fellowship | Diploma | Certificate
+  field       String?  // Course of study
+  startDate   DateTime?
+  endDate     DateTime?
+  grade       String?  // Class of degree
+  certificateUrl String?
+  certificateNumber String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([staffId])
+  @@map("academic_background")
+}
+
+model Dependant {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  fullName    String
+  relationship String?
+  dateOfBirth DateTime?
+  gender      String?
+  createdAt   DateTime @default(now())
+
+  @@index([staffId])
+  @@map("dependants")
+}
+
+// ============================================================
+// APPRAISAL / REVIEW MODULES
+// ============================================================
+
+// Duty — a recurring responsibility assigned to a staff for evaluation
+model Duty {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  // === Task details ===
+  title       String
+  description String?
+  type        String   @default("Primary")  // Primary | Secondary | Routine | Project-based
+  order       Int      @default(1)  // ordering within a staff's duties
+
+  // === Duration & deadline ===
+  startDate   DateTime?
+  dueDate     DateTime?  // deadline to complete the duty
+  completedAt DateTime?
+  durationDays Int?  // expected number of days to complete (auto-calc from start to due date)
+
+  // === Status & overdue tracking ===
+  // Assigned | In Progress | Completed | Approved | Rejected | Overdue
+  status      String   @default("Assigned")
+
+  // === Evidence of completion ===
+  // When staff completes a duty, they upload evidence (file/document/photo)
+  evidenceUrl      String?
+  evidenceFileName String?
+  evidenceNotes    String?  // staff notes about the completion
+  evidenceUploadedAt DateTime?
+
+  // === Scoring ===
+  targetScore  Float   @default(100)
+  achievedScore Float?
+  grade       String?
+  rating      String?  // Outstanding | Excellent | Very Good | Good | Satisfactory | Poor
+  scoreNotes  String?  // reviewer's notes on the score
+
+  // === Review workflow ===
+  // HOU reviews the duty of their unit's staff
+  // HOD reviews the HOU's duties (the HOU is also a staff member)
+  reviewedById   String?
+  reviewedByName String?
+  reviewedAt    DateTime?
+  reviewRemarks String?
+
+  weight       Float    @default(1) // weight in aggregate
+  period       String? // e.g. "2025" or "2025-Q4"
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([status])
+  @@index([reviewedById])
+  @@index([period])
+}
+
+// Annual Review — yearly performance summary (dual-signature workflow)
+model AnnualReview {
+  id              String   @id @default(cuid())
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  period          String   // e.g. "2025"
+
+  overallScore    Float    @default(0)
+  assessmentScore Float    @default(0)
+  monthlyScore    Float    @default(0)
+  quarterlyScore  Float    @default(0)
+  appraisalScore  Float    @default(0)
+  dutyScore       Float    @default(0)
+  verdict         String?  // Outstanding | Excellent | Very Good | Good | Satisfactory | Poor
+
+  status          String   @default("Draft") // Draft | Submitted | HOD Signed | DA Signed | Completed
+  comments        String?
+
+  // HOD signature
+  hodName         String?
+  hodSignatureUrl String?
+  hodSignedAt     DateTime?
+
+  // DA (Departmental Administrator) signature
+  daName          String?
+  daSignatureUrl  String?
+  daSignedAt      DateTime?
+
+  // Duty snapshot at review time
+  annualReviewDuties Json?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([period])
+}
+
+// Monthly Appraisal — monthly check-in (12 per staff per year)
+model MonthlyAppraisal {
+  id              String   @id @default(cuid())
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  period          String   // e.g. "2025-01"
+  month           Int      // 1-12
+  year            Int
+
+  score           Float    @default(0)
+  grade           String?
+  achievements    String?
+  challenges      String?
+  recommendations String?
+  comments        String?
+
+  status          String   @default("Draft") // Draft | Submitted | Acknowledged | Signed
+  hodRemarks      String?
+  houRemarks      String?
+
+  hodName         String?
+  hodSignedAt     DateTime?
+  houName         String?
+  houSignedAt     DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([staffId, year, month])
+  @@index([staffId])
+}
+
+// Quarterly Review — Q1-Q4 review with auto-averaging from monthly
+model QuarterlyReview {
+  id              String   @id @default(cuid())
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  period          String   // e.g. "2025-Q1"
+  quarter         Int      // 1-4
+  year            Int
+
+  averageScore    Float    @default(0)
+  grade           String?
+  summary         String?
+  comments        String?
+  status          String   @default("Draft") // Draft | Submitted | Completed
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([staffId, year, quarter])
+  @@index([staffId])
+}
+
+// Assessment — knowledge + skills + attitude + communication
+model Assessment {
+  id              String   @id @default(cuid())
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  period          String   // e.g. "2025"
+
+  knowledgeScore  Float    @default(0)
+  skillsScore     Float    @default(0)
+  attitudeScore   Float    @default(0)
+  communicationScore Float @default(0)
+  totalScore      Float    @default(0)
+  grade           String?
+
+  assessedById    String?
+  remarks         String?
+  status          String   @default("Draft") // Draft | Submitted | Reviewed
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([staffId])
+}
+
+// Appraisal — performance + achievement + competency
+model Appraisal {
+  id              String   @id @default(cuid())
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  period          String   // e.g. "2025"
+
+  performanceScore Float   @default(0)
+  achievementScore Float  @default(0)
+  competencyScore  Float  @default(0)
+  totalScore       Float  @default(0)
+  grade            String?
+
+  appraisedById   String?
+  remarks         String?
+  status          String   @default("Draft")
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([staffId])
+}
+
+// ============================================================
+// LEAVE MANAGEMENT
+// ============================================================
+
+model LeaveType {
+  id          String   @id @default(cuid())
+  code        String   @unique // annual | study | sick | maternity | paternity | casual | compassionate | examination | sabbatical | without_pay
+  name        String
+  description String?
+  defaultDays Int      @default(0)
+  isPaid      Boolean  @default(true)
+  requiresCertificate Boolean @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  leaves Leave[]
+}
+
+model Leave {
+  id            String   @id @default(cuid())
+  refNumber     String   @unique // e.g. LV-2025-000001
+  staffId       String
+  staff         Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  leaveTypeId   String
+  leaveType     LeaveType @relation(fields: [leaveTypeId], references: [id])
+
+  startDate     DateTime
+  endDate       DateTime
+  daysRequested Int
+  daysApproved  Int?
+  reason        String
+  address       String?
+  phone         String?
+  certificateUrl String?
+
+  // === Workflow tracking ===
+  // Stage: Submitted | HOU Review | HOD Review | Registry | Forwarded | Completed | Rejected | Cancelled
+  currentStage  String   @default("Submitted")
+  // Who currently has this leave form
+  currentHolderId   String?
+  currentHolder     User? @relation("LeaveCurrentHolder", fields: [currentHolderId], references: [id])
+
+  status        String   @default("Pending") // Pending | HOU Approved | HOD Approved | Registry Received | Forwarded | Completed | Rejected | Cancelled
+  state         String   @default("open")    // open | approved | rejected | cancelled | completed
+
+  // Legacy approval fields (kept for backward compatibility)
+  hodId         String?
+  hodName       String?
+  hodRemarks    String?
+  hodSignedAt   DateTime?
+
+  houId         String?
+  houName       String?
+  houRemarks    String?
+  houSignedAt   DateTime?
+
+  registryId       String?
+  registryName     String?
+  registryRemarks  String?
+  registryReceivedAt DateTime?
+
+  dfaId         String?
+  dfaName       String?
+  dfaRemarks    String?
+  dfaSignedAt   DateTime?
+
+  cmdId         String?
+  cmdName       String?
+  cmdRemarks    String?
+  cmdSignedAt   DateTime?
+
+  rejectedById  String?
+  rejectedAt    DateTime?
+  rejectReason  String?
+
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Routing trail — each step of the workflow
+  routes       LeaveRoute[]
+
+  @@index([staffId])
+  @@index([status])
+  @@index([currentStage])
+  @@index([currentHolderId])
+}
+
+// Leave routing trail — tracks each step: who sent it, who received it, what action was taken
+model LeaveRoute {
+  id          String   @id @default(cuid())
+  leaveId     String
+  leave       Leave    @relation(fields: [leaveId], references: [id], onDelete: Cascade)
+
+  // Who sent/acted
+  fromUserId  String
+  fromUser    User    @relation("LeaveRouteFromUser", fields: [fromUserId], references: [id])
+
+  // Who received it (optional — for "reject" or "complete" actions, there's no recipient)
+  toUserId    String?
+  toUser      User?   @relation("LeaveRouteToUser", fields: [toUserId], references: [id])
+
+  // The stage at this step
+  stage       String   // Submitted | HOU Review | HOD Review | Registry | Forwarded | Completed | Rejected | Returned
+
+  // What action was taken
+  action      String   // submit | hou_approve | hod_approve | registry_receive | forward | return_to_registry | complete | reject | cancel
+
+  // Remarks at this step
+  remarks     String?
+
+  // Optional signature
+  signerName       String?
+  signerDesignation String?
+  signatureUrl     String?
+  signedAt         DateTime?
+
+  createdAt   DateTime @default(now())
+
+  @@index([leaveId])
+  @@index([toUserId])
+  @@index([fromUserId])
+}
+
+// Holiday calendar
+model Holiday {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  date        DateTime
+  type        String   @default("public") // public | religious | institutional
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+// ============================================================
+// PROMOTIONS / TERMINATIONS / RESIGNATIONS — HR lifecycle
+// ============================================================
+
+model Promotion {
+  id            String   @id @default(cuid())
+  refNumber     String   @unique // e.g. PRM-2026-000001
+  staffId       String
+  staff         Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  // From / To
+  currentPosition String?
+  currentRank    String?
+  currentSalary  Float?
+  newPosition    String?
+  newRank        String?
+  newSalary      Float?
+  newDepartmentId String?
+  newDesignationId String?
+
+  // Type: promotion | upgrade | conversion | redesignation
+  type          String   @default("promotion")
+  effectiveDate DateTime
+  reason        String?
+  justification String?
+
+  // Status: Draft | Submitted | HOD Approved | DFA Approved | CMD Approved | Rejected | Cancelled | Completed
+  status        String   @default("Submitted")
+  state         String   @default("open")
+
+  // Approval signatures
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectReason    String?
+
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([status])
+}
+
+model Termination {
+  id             String   @id @default(cuid())
+  refNumber      String   @unique // e.g. TRM-2026-000001
+  staffId        String
+  staff          Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  // Type: termination | dismissal | retirement | contract-end | death
+  type           String  @default("termination")
+  reason         String
+  detailedReason String?
+
+  // Effective
+  noticeDate     DateTime?
+  effectiveDate  DateTime
+  lastWorkingDate DateTime?
+
+  // Exit interview
+  exitInterviewConducted Boolean @default(false)
+  exitInterviewNotes String?
+  handoverCompleted      Boolean @default(false)
+  assetsReturned         Boolean @default(false)
+  clearanceFormUrl       String?
+
+  // Final entitlements
+  finalSalary       Float?
+  gratuityAmount    Float?
+  pensionBalance    Float?
+  leaveEncashment   Float?
+
+  // Status: Draft | Submitted | HOD Approved | DFA Approved | CMD Approved | Rejected | Cancelled | Completed
+  status          String   @default("Submitted")
+  state           String   @default("open")
+
+  // Approval signatures
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectReason    String?
+
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([status])
+}
+
+model Resignation {
+  id             String   @id @default(cuid())
+  refNumber      String   @unique // e.g. RSG-2026-000001
+  staffId        String
+  staff          Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  reason         String
+  detailedReason String?
+  resignationDate DateTime // date the letter was submitted
+  noticeDate     DateTime? // date notice was given
+  effectiveDate  DateTime // last working day
+  lastWorkingDate DateTime?
+
+  // Withdrawal
+  isWithdrawn    Boolean @default(false)
+  withdrawnAt    DateTime?
+  withdrawnById  String?
+
+  // Exit interview
+  exitInterviewConducted Boolean @default(false)
+  exitInterviewNotes String?
+  handoverCompleted      Boolean @default(false)
+  assetsReturned        Boolean @default(false)
+  clearanceFormUrl      String?
+
+  // Final entitlements
+  finalSalary       Float?
+  gratuityAmount    Float?
+  pensionBalance    Float?
+  leaveEncashment   Float?
+
+  // Status: Draft | Submitted | HOD Acknowledged | DFA Approved | CMD Approved | Accepted | Rejected | Withdrawn | Completed
+  status          String   @default("Submitted")
+  state           String   @default("open")
+
+  // Approval signatures
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectReason    String?
+
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([status])
+}
+
+// ============================================================
+// RETIREMENT — staff retirement applications & benefit processing
+// ============================================================
+
+model Retirement {
+  id              String   @id @default(cuid())
+  refNumber       String   @unique
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  type            String  @default("compulsory")
+  reason          String?
+  detailedReason  String?
+  dateOfBirth     DateTime?
+  retirementDate  DateTime
+  lastWorkingDate DateTime?
+  yearsOfService  Int?
+  dateOfFirstAppointment DateTime?
+  currentSalaryAtRetirement Float?
+  gradeLevelAtRetirement  String?
+  gratuityAmount        Float?
+  pensionBalance        Float?
+  leaveEncashment       Float?
+  pensionAdministrator  String?
+  pensionPin            String?
+  nhfRefundAmount        Float?
+  nhisRefundAmount      Float?
+  exitInterviewConducted Boolean @default(false)
+  exitInterviewNotes    String?
+  handoverCompleted     Boolean @default(false)
+  assetsReturned         Boolean @default(false)
+  clearanceFormUrl       String?
+  certificateOfService   String?
+  status          String   @default("Submitted")
+  state           String   @default("open")
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectReason    String?
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  @@index([staffId])
+  @@index([status])
+}
+
+// ============================================================
+// TRAINING — training programs + enrollments
+// ============================================================
+
+model Training {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  title         String
+  description   String?
+  type          String  @default("workshop")
+  category      String?
+  provider      String?
+  facilitator   String?
+  location      String?
+  mode          String  @default("physical")
+  startDate      DateTime
+  endDate        DateTime
+  durationHours Int?
+  cost          Float?
+  fundingSource String?
+  targetDesignationId String?
+  targetDepartmentId  String?
+  departmentId        String?
+  department          Department? @relation(fields: [departmentId], references: [id])
+  maxParticipants Int?
+  certificateTemplateUrl String?
+  status         String   @default("Open")
+  isActive       Boolean  @default(true)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  enrollments    TrainingEnrollment[]
+  @@index([departmentId])
+  @@index([status])
+  @@index([startDate])
+}
+
+model TrainingEnrollment {
+  id           String   @id @default(cuid())
+  trainingId   String
+  training     Training @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+  staffId      String
+  staff        Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  status       String  @default("Enrolled")
+  enrolledAt   DateTime @default(now())
+  attendedAt   DateTime?
+  completedAt  DateTime?
+  attendanceRate Float?
+  score          Float?
+  grade          String?
+  certificateUrl String?
+  feedbackNotes  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@unique([trainingId, staffId])
+  @@index([trainingId])
+  @@index([staffId])
+  @@index([status])
+}
+
+// ============================================================
+// PROJECTS — institutional projects with members & milestones
+// ============================================================
+
+model Project {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  title        String
+  description  String?
+  type         String  @default("institutional")
+  category     String?
+  priority     String  @default("Normal")
+  sponsorId        String?
+  departmentId     String?
+  department       Department? @relation(fields: [departmentId], references: [id])
+  unitId           String?
+  unit             Unit?       @relation(fields: [unitId], references: [id])
+  startDate        DateTime
+  endDate          DateTime?
+  actualEndDate    DateTime?
+  durationDays     Int?
+  budget           Float?
+  spent            Float  @default(0)
+  currency         String @default("NGN")
+  fundingSource    String?
+  progress         Int  @default(0)
+  status           String @default("Planned")
+  state            String @default("open")
+  isActive         Boolean @default(true)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  members       ProjectMember[]
+  milestones    ProjectMilestone[]
+  @@index([departmentId])
+  @@index([status])
+  @@index([sponsorId])
+}
+
+model ProjectMember {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  staffId     String
+  staff       Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  role         String  @default("Member")
+  joinedAt     DateTime @default(now())
+  leftAt       DateTime?
+  contribution String?
+  createdAt   DateTime @default(now())
+  @@unique([projectId, staffId])
+  @@index([projectId])
+  @@index([staffId])
+}
+
+model ProjectMilestone {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  dueDate     DateTime
+  completedAt DateTime?
+  status      String  @default("Pending")
+  weight      Int  @default(1)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([projectId])
+  @@index([status])
+}
+
+// ============================================================
+// PAYMENT VOUCHERS (PV) — DFA → Desk Officer → Audit workflow
+// ============================================================
+
+model PaymentVoucher {
+  id            String   @id @default(cuid())
+  refNumber     String   @unique
+  requisitionId String?
+  requisition   Requisition? @relation(fields: [requisitionId], references: [id], onDelete: SetNull)
+  pvType        String   @default("treasury_f1")
+  voteNumber       String?
+  subHead          String?
+  voucherNumber    String?
+  classificationCode String?
+  departmentalNumber String?
+  payeeName       String
+  payeeAddress    String?
+  payeePhone      String?
+  payeeAccountNumber String?
+  payeeBankName   String?
+  chequeNumber    String?
+  amountNaira     Int  @default(0)
+  amountKobo     Int  @default(0)
+  amountInWords  String?
+  lineItems       String?
+  payableAt       String?
+  paymentStation  String?
+  status          String   @default("Draft")
+  state           String   @default("open")
+  deskOfficerId       String?
+  deskOfficerName     String?
+  deskOfficerSignatureUrl String?
+  deskOfficerRemarks  String?
+  raisedAt            DateTime?
+  auditOfficerId      String?
+  auditOfficerName    String?
+  auditComments       String?
+  auditSignatureUrl   String?
+  auditReviewedAt     DateTime?
+  auditApprovedAt     DateTime?
+  queryText           String?
+  queryRaisedAt       DateTime?
+  queryRaisedById     String?
+  initiatorResponse   String?
+  initiatorRespondedAt DateTime?
+  initiatorRespondedById String?
+  oceName             String?
+  oceSignatureUrl     String?
+  oceSignedAt         DateTime?
+  oceRemarks          String?
+  payingOfficerId     String?
+  payingOfficerName   String?
+  payingOfficerSignatureUrl String?
+  paymentAuthorizedAt DateTime?
+  paidAt              DateTime?
+  paidBy              String?
+  dfaApprovedPV       Boolean @default(false)
+  dfaApprovedAt      DateTime?
+  dfaRemarks          String?
+  cmdApprovedPV       Boolean @default(false)
+  cmdApprovedAt      DateTime?
+  createdById  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  comments    PVComment[]
+  attachments PVAttachment[]
+  @@index([requisitionId])
+  @@index([status])
+  @@index([deskOfficerId])
+  @@index([auditOfficerId])
+}
+
+model PVComment {
+  id          String   @id @default(cuid())
+  pvId        String
+  pv          PaymentVoucher @relation(fields: [pvId], references: [id], onDelete: Cascade)
+  type        String  @default("comment")
+  body        String
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now())
+  @@index([pvId])
+}
+
+model PVAttachment {
+  id          String   @id @default(cuid())
+  pvId        String
+  pv          PaymentVoucher @relation(fields: [pvId], references: [id], onDelete: Cascade)
+  fileName    String
+  fileUrl     String
+  fileSize    Int?
+  mimeType    String?
+  uploadedById String?
+  createdAt   DateTime @default(now())
+  @@index([pvId])
+}
+
+// ============================================================
+// REPORTS — report templates + generated reports
+// ============================================================
+
+model ReportTemplate {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  category    String
+  accessLevel String   @default("management")
+  module      String   @default("staff")
+  format      String   @default("both")
+  icon        String?
+  hasDateRange Boolean @default(true)
+  hasDeptFilter Boolean @default(true)
+  sortOrder   Int      @default(100)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  reports     GeneratedReport[]
+}
+
+model GeneratedReport {
+  id          String   @id @default(cuid())
+  templateId  String
+  template    ReportTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  startDate   DateTime?
+  endDate     DateTime?
+  departmentId String?
+  filters     String?
+  fileName    String
+  fileUrl     String?
+  data        String?
+  generatedById String
+  generatedAt   DateTime @default(now())
+  @@index([templateId])
+  @@index([generatedById])
+}
+
+// ============================================================
+// POSTING & TRANSFER — staff posting/transfer workflow
+// ============================================================
+
+model PostingTransfer {
+  id            String   @id @default(cuid())
+  refNumber     String   @unique
+  staffId       String
+  staff         Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  type          String   @default("posting")
+  fromDepartmentId String?
+  fromUnitId       String?
+  fromPosition     String?
+  fromDesignationId String?
+  toDepartmentId String?
+  toDepartment   Department? @relation(fields: [toDepartmentId], references: [id])
+  toUnitId       String?
+  toUnit         Unit?       @relation(fields: [toUnitId], references: [id])
+  toPosition     String?
+  toDesignationId String?
+  toDesignation  Designation? @relation(fields: [toDesignationId], references: [id])
+  reason        String
+  detailedReason String?
+  effectiveDate DateTime
+  reportDeadline DateTime?
+  handoverDate  DateTime?
+  status        String   @default("Submitted")
+  state         String   @default("open")
+  planningReviewedById String?
+  planningReviewedAt   DateTime?
+  planningRemarks      String?
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectReason    String?
+  postingLetterUrl String?
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  @@index([staffId])
+  @@index([status])
+  @@index([toDepartmentId])
+}
+
+// ============================================================
+// REQUISITIONS (service / expense / other)
+// ============================================================
+
+model Requisition {
+  id           String   @id @default(cuid())
+  refNumber    String   @unique // e.g. FUTH/REQ/SVC/2025/0001
+  type         String   // service | expense | other
+  subject      String
+  description  String
+  comment      String?
+
+  // Amount (for expense type)
+  amount       Float?
+
+  // Priority
+  priority     String   @default("Normal") // Low | Normal | High | Urgent | Critical
+
+  // Status workflow:
+  // Draft -> Submitted -> In Review -> Approved -> Closed
+  //                            \-> Rejected -> Closed
+  //                            \-> Returned -> (resubmit)
+  status       String   @default("Submitted")
+  // Sub-state for terminal actions:
+  // open | forwarded | approved | rejected | returned | closed_permanently
+  state        String   @default("open")
+
+  // Creator
+  createdById   String
+  createdBy     User     @relation("ReqCreator", fields: [createdById], references: [id])
+
+  // Current assignee (the user who must act next) - optional if routed to a designation
+  assigneeId    String?
+  assignee      User?    @relation("ReqAssignee", fields: [assigneeId], references: [id])
+
+  // Routing target — either a specific user (staff) OR a designation
+  targetUserId       String?
+  targetUser         User?   @relation("ReqTargetUser", fields: [targetUserId], references: [id])
+  targetDesignationId String?
+  targetDesignation  Designation? @relation("ReqTargetDesignation", fields: [targetDesignationId], references: [id])
+  targetDepartmentId String?
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  // Closure
+  closedAt     DateTime?
+  closedById   String?
+  closedBy     User?   @relation("ReqClosedBy", fields: [closedById], references: [id])
+  closureNote  String?
+
+  // === Multi-signature workflow ===
+  // For expense requisitions: CMD + DFA signatures required for final approval
+  // For service requisitions: CMD + DA (Departmental Administrator) signatures required
+  // For other: route-defined signatures
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+
+  daId            String?  // Departmental Administrator
+  daName          String?
+  daSignatureUrl  String?
+  daRemarks       String?
+  daSignedAt      DateTime?
+
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  routes       RequisitionRoute[]
+  comments     RequisitionComment[]
+  attachments  RequisitionAttachment[]
+
+  // Payment Voucher raised against this requisition (DFA → Desk Officer → Audit flow)
+  paymentVouchers PaymentVoucher[]
+
+  @@index([status])
+  @@index([type])
+  @@index([assigneeId])
+  @@index([targetDesignationId])
+}
+
+model RequisitionRoute {
+  id            String   @id @default(cuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  // Sender
+  fromUserId    String
+  fromUser      User @relation("RouteFromUser", fields: [fromUserId], references: [id])
+
+  // Recipient — either user or designation (designation routed to all users with that role)
+  toUserId       String?
+  toUser         User?  @relation("RouteToUser", fields: [toUserId], references: [id])
+  toDesignationId String?
+  toDesignation  Designation? @relation("RouteToDesignation", fields: [toDesignationId], references: [id])
+  toDepartmentId String?
+
+  action       String   // forward | approve | reject | return | close_permanently | submit
+  remarks      String?
+  acknowledgedAt DateTime?
+
+  // Per-hop signature capture — each user who handles this requisition signs here
+  signerName       String?
+  signerDesignation String?
+  signatureUrl     String?
+  signedAt         DateTime?
+
+  createdAt    DateTime @default(now())
+
+  @@index([requisitionId])
+  @@index([toUserId])
+  @@index([toDesignationId])
+}
+
+model RequisitionComment {
+  id            String   @id @default(cuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User @relation(fields: [userId], references: [id])
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([requisitionId])
+}
+
+model RequisitionAttachment {
+  id            String   @id @default(cuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  fileName      String
+  fileUrl       String
+  fileSize      Int?
+  mimeType      String?
+  uploadedById  String?
+  createdAt     DateTime @default(now())
+
+  @@index([requisitionId])
+}
+
+// ============================================================
+// REGISTRY FILES (physical-file-style routing)
+// ============================================================
+
+model RegistryFile {
+  id           String   @id @default(cuid())
+  fileNumber   String   @unique // e.g. FUTH/REG/IND/2025/0001
+  type         String   // individual | department | external | committee
+  subject      String
+  description  String
+  priority     String   @default("Normal")
+  volume       String?  // volume number on the registry file cover (GEN.3 REVISED form)
+
+  // Originator
+  createdById  String
+  createdBy    User     @relation("FileCreator", fields: [createdById], references: [id])
+
+  // Current holder
+  currentHolderId String?
+  currentHolder   User? @relation("FileCurrentHolder", fields: [currentHolderId], references: [id])
+
+  // Status: Draft -> In Transit -> Received -> Completed -> Archived
+  //         | Returned to sender
+  status       String   @default("Draft")
+  // state: open | in_transit | received | completed | returned | archived
+  state        String   @default("open")
+
+  // For individual type
+  staffId      String?
+
+  // For department type
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  // For external type
+  externalName    String?
+  externalOrg     String?
+  externalEmail   String?
+  externalPhone   String?
+
+  // For committee type — link to a Committee record
+  committeeId      String?
+  committee        Committee? @relation(fields: [committeeId], references: [id])
+
+  // Routing target — either user OR designation
+  targetUserId        String?
+  targetUser          User? @relation("FileTargetUser", fields: [targetUserId], references: [id])
+  targetDesignationId String?
+  targetDesignation   Designation? @relation("FileTargetDesignation", fields: [targetDesignationId], references: [id])
+  targetDepartmentId  String?
+
+  // Closure signatures — for committee files especially
+  cmdSignatureUrl    String?
+  cmdSignedAt       DateTime?
+  dfaSignatureUrl   String?
+  dfaSignedAt       DateTime?
+  hodSignatureUrl   String?
+  hodSignedAt       DateTime?
+  registrySignatureUrl String?
+  registrySignedAt      DateTime?
+
+  closedAt     DateTime?
+  closedById   String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  routes       FileRoute[]
+  attachments  FileAttachment[]
+  comments     FileComment[]
+
+  @@index([status])
+  @@index([currentHolderId])
+  @@index([targetDesignationId])
+  @@index([committeeId])
+  @@map("registry_files")
+}
+
+// Committee — institutional committee (e.g. Tenders Board, Disciplinary Committee, Promotions Committee)
+model Committee {
+  id          String   @id @default(cuid())
+  code        String   @unique // e.g. TENDERS, DISCIPLINARY, PROMOTIONS, ETHICS, RESEARCH
+  name        String
+  description String?
+  chairpersonId String?  // link to a User
+  chairperson  User?     @relation("CommitteeChair", fields: [chairpersonId], references: [id])
+  secretaryId  String?
+  secretary   User?      @relation("CommitteeSecretary", fields: [secretaryId], references: [id])
+  members     String?   // JSON list of member IDs/names (legacy)
+  termOfReference String?
+  startDate       DateTime?
+  endDate         DateTime?
+  budget          Float?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  files       RegistryFile[]
+  documents   Document[]
+  members2    CommitteeMember[]
+
+  @@index([isActive])
+  @@map("committees")
+}
+
+model CommitteeMember {
+  id          String   @id @default(cuid())
+  committeeId String
+  committee   Committee @relation(fields: [committeeId], references: [id], onDelete: Cascade)
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  role        String   @default("member")
+  addedById   String?
+  addedBy     User?    @relation("CommitteeMemberAddedBy", fields: [addedById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([committeeId, staffId])
+  @@index([committeeId])
+  @@index([staffId])
+  @@map("committee_members")
+}
+
+model PasswordResetRequest {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  usernameQuery String
+  contactEmail String?
+  contactPhone String?
+  note        String?
+  status      String   @default("pending")
+  resolvedById String?
+  resolvedBy   User?   @relation("PasswordResetResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt   DateTime?
+  resolvedNote String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status])
+  @@index([userId])
+}
+
+model FileRoute {
+  id            String   @id @default(cuid())
+  fileId        String
+  file          RegistryFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  fromUserId    String
+  fromUser      User @relation("FileRouteFromUser", fields: [fromUserId], references: [id])
+
+  // Recipient — user or designation
+  toUserId       String?
+  toUser         User? @relation("FileRouteToUser", fields: [toUserId], references: [id])
+  toDesignationId String?
+  toDesignation  Designation? @relation("FileRouteToDesignation", fields: [toDesignationId], references: [id])
+  toDepartmentId String?
+
+  action       String // forward | acknowledge | return | complete | reject | archive
+  remarks      String?
+  acknowledgedAt DateTime?
+
+  // Per-hop signature capture — each user who handles this file signs here
+  signerName       String?
+  signerDesignation String?
+  signatureUrl     String?
+  signedAt         DateTime?
+
+  createdAt    DateTime @default(now())
+
+  @@index([fileId])
+  @@index([toUserId])
+  @@index([toDesignationId])
+  @@map("file_routes")
+}
+
+model FileAttachment {
+  id            String   @id @default(cuid())
+  fileId        String
+  file          RegistryFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  fileName      String
+  fileUrl       String
+  fileSize      Int?
+  mimeType      String?
+  uploadedById  String?
+  isPrimary     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([fileId])
+  @@map("file_attachments")
+}
+
+model FileComment {
+  id            String   @id @default(cuid())
+  fileId        String
+  file          RegistryFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User @relation(fields: [userId], references: [id])
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([fileId])
+  @@map("file_comments")
+}
+
+// ============================================================
+// CMD MAIL — internal messaging for the Chief Medical Director
+// ============================================================
+
+model MailMessage {
+  id         String   @id @default(cuid())
+  subject    String
+  body       String
+
+  fromId     String
+  from       User     @relation("MailFrom", fields: [fromId], references: [id])
+
+  toId       String
+  to         User     @relation("MailTo", fields: [toId], references: [id])
+
+  // Requisition/file link (optional)
+  requisitionId String?
+  fileId        String?
+
+  // Priority
+  priority   String   @default("Normal")
+
+  isRead     Boolean  @default(false)
+  isArchived Boolean  @default(false)
+  isStarred  Boolean  @default(false)
+
+  readAt     DateTime?
+  archivedAt DateTime?
+
+  // Thread support
+  parentId   String?
+  parent     MailMessage?  @relation("MailThread", fields: [parentId], references: [id])
+  replies    MailMessage[] @relation("MailThread")
+
+  createdAt  DateTime @default(now())
+
+  @@index([toId, isRead])
+  @@index([fromId])
+  @@index([isArchived])
+}
+
+// ============================================================
+// NOTIFICATIONS & AUDIT
+// ============================================================
+
+model Notification {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation("NotifUser", fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  body       String
+  type       String   @default("info") // info | requisition | file | mail | approval
+  link       String?
+  isRead     Boolean  @default(false)
+  readAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation("AuditUser", fields: [userId], references: [id])
+  action     String
+  entity     String?
+  entityId   String?
+  details    String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// DOCUMENTS — institutional document repository
+// Used by Registry to upload hardcopy staff documents, committee files,
+// institutional documents, etc. Staff can only upload their own image
+// and signature.
+// ============================================================
+
+model Document {
+  id          String   @id @default(cuid())
+  fileNumber  String   @unique // e.g. FUTH/DOC/HDC/2026/0001 — auto-generated per category per year
+  title       String
+  description String?
+
+  // Category drives permission + display grouping.
+  // staff_hardcopy   : scanned hardcopy of a staff record (NIN card, certificate, etc.) — managers only
+  // committee_file   : document attached to a committee (minutes, agenda, decisions)
+  // institutional   : institutional policy / memo / directive
+  // personal_image  : staff member's own passport photo (linked to staff.avatarUrl)
+  // personal_signature : staff member's own signature image (linked to staff.signatureUrl)
+  // other           : misc
+  category    String
+
+  // File metadata (stored via /api/uploads)
+  fileUrl     String
+  fileName    String
+  fileSize    Int?
+  mimeType    String?
+
+  // Optional links (filled based on category)
+  staffId     String?
+  staff       Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  committeeId String?
+  committee   Committee? @relation(fields: [committeeId], references: [id], onDelete: Cascade)
+
+  uploadedById String
+  uploadedBy   User     @relation("DocumentUploader", fields: [uploadedById], references: [id])
+
+  // Optional metadata for hardcopies
+  documentDate DateTime?  // date the original document was issued (for scanned hardcopies)
+  tags         String?    // comma-separated tags
+
+  // Visibility — true = visible to all logged-in users; false = only uploader + managers can see
+  isPublic     Boolean  @default(true)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([committeeId])
+  @@index([category])
+  @@index([uploadedById])
+  @@index([isPublic])
+  @@index([fileNumber])
+  @@map("documents")
+}

@@ -1,0 +1,75 @@
+const fs = require('fs');
+const path = require('path');
+
+const SCHEMA = path.join(__dirname, 'prisma', 'schema.prisma');
+
+// Maps model name -> actual MySQL table name in the futh_hr dump
+const MODEL_TO_TABLE = {
+  User: 'users', Staff: 'staff', Role: 'roles',
+  Designation: 'designations', Department: 'departments', Unit: 'units',
+  Page: 'pages', RolePagePermission: 'role_page_permissions',
+  Committee: 'committees', CommitteeMember: 'committee_members',
+  Document: 'documents', RegistryFile: 'registry_files',
+  FileRoute: 'file_routes', FileAttachment: 'file_attachments',
+  FileComment: 'file_comments', Notification: 'notifications',
+  AuditLog: 'audit_logs', PasswordResetToken: 'password_reset_tokens',
+  NextOfKin: 'next_of_kin', BankDetail: 'bank_details',
+  AcademicBackground: 'academic_background', Dependant: 'dependants',
+};
+
+let src = fs.readFileSync(SCHEMA, 'utf8');
+let patched = 0;
+
+// Walk each "model X {" block, balance braces, insert @@map if missing.
+src = src.replace(/model\s+(\w+)\s*\{/g, (match, modelName) => {
+  const startIdx = src.indexOf(match);
+  return match; // placeholder; real work below
+});
+
+// Simpler line-by-line approach
+const lines = src.split('\n');
+const out = [];
+let inModel = false;
+let modelStart = -1;
+let braceDepth = 0;
+let currentModel = null;
+let hasMap = false;
+
+for (let i = 0; i < lines.length; i++) {
+  const line = lines[i];
+  out.push(line);
+
+  const modelStartMatch = line.match(/^model\s+(\w+)\s*\{/);
+  if (modelStartMatch) {
+    inModel = true;
+    currentModel = modelStartMatch[1];
+    hasMap = false;
+    braceDepth = 1;
+    continue;
+  }
+
+  if (inModel) {
+    // count braces on this line (ignoring strings/comments is overkill for prisma)
+    for (const ch of line) {
+      if (ch === '{') braceDepth++;
+      else if (ch === '}') braceDepth--;
+    }
+    if (line.includes('@@map')) hasMap = true;
+    if (braceDepth === 0) {
+      // closing brace of model block
+      if (!hasMap && MODEL_TO_TABLE[currentModel]) {
+        // insert @@map before the closing brace line
+        out.pop(); // remove the closing brace line we just pushed
+        out.push(`  @@map("${MODEL_TO_TABLE[currentModel]}")`);
+        out.push(line);
+        patched++;
+        console.log(`  patched: model ${currentModel} -> @@map("${MODEL_TO_TABLE[currentModel]}")`);
+      }
+      inModel = false;
+      currentModel = null;
+    }
+  }
+}
+
+fs.writeFileSync(SCHEMA, out.join('\n'), 'utf8');
+console.log(`\nDone. Patched ${patched} model(s) in ${SCHEMA}`);
