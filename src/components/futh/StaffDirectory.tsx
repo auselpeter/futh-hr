@@ -107,17 +107,30 @@ export default function StaffDirectory({ user }: Props) {
       if (rankFilter !== 'all') params.set('rank', rankFilter)
       if (gradeFilter !== 'all') params.set('gradeLevel', gradeFilter)
       if (statusFilter !== 'all') params.set('status', statusFilter)
-      const [staffRes, deptRes, dsgRes, unitRes] = await Promise.all([
+      const [staffRes, deptRes, dsgRes, unitRes, flagsRes] = await Promise.all([
         fetch(`/api/staff?${params.toString()}`, { cache: 'no-store' }),
         fetch('/api/departments', { cache: 'no-store' }),
         fetch('/api/designations', { cache: 'no-store' }),
         fetch('/api/units?limit=500', { cache: 'no-store' }),
+        fetch('/api/staff/flags?type=all', { cache: 'no-store' }),
       ])
       const sData = await staffRes.json()
       const dData = await deptRes.json()
       const dsgData = await dsgRes.json()
       const uData = await unitRes.json()
-      setStaff(sData.staff || [])
+      const flagsData = await flagsRes.json()
+
+      // Merge flags into staff records so the directory can show inline badges
+      const flagsMap = new Map<string, any[]>()
+      for (const f of (flagsData.flags || [])) {
+        flagsMap.set(f.staff.id, f.flags)
+      }
+      const staffWithFlags = (sData.staff || []).map((s: any) => ({
+        ...s,
+        _flags: flagsMap.get(s.id) || [],
+      }))
+
+      setStaff(staffWithFlags)
       setDepartments(dData.departments || [])
       setDesignations(dsgData.designations || [])
       setUnits(uData.units || [])
@@ -135,7 +148,10 @@ export default function StaffDirectory({ user }: Props) {
     try {
       const res = await fetch(`/api/staff/${s.id}`, { cache: 'no-store' })
       const data = await res.json()
-      setSelectedDetail(data.staff || null)
+      // Preserve the _flags attached from /api/staff/flags so the detail
+      // view can render confirmation/promotion/retirement badges without
+      // an extra round-trip.
+      setSelectedDetail({ ...(data.staff || null), _flags: s._flags || [] })
     } catch {
       toast.error('Failed to load staff details')
     }
@@ -498,9 +514,26 @@ export default function StaffDirectory({ user }: Props) {
                       </td>
                       {/* 9. Status */}
                       <td className="px-4 py-3 text-center">
-                        <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${statusColor[s.status] || 'bg-gray-100 text-gray-700'}`}>
-                          {s.status.replace('_', ' ')}
-                        </span>
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${statusColor[s.status] || 'bg-gray-100 text-gray-700'}`}>
+                            {s.status.replace('_', ' ')}
+                          </span>
+                          {/* Inline flag badges (confirmation/promotion/retirement due or overdue) */}
+                          {s._flags && s._flags.length > 0 && (
+                            <div className="flex flex-wrap gap-0.5 justify-center">
+                              {s._flags.slice(0, 3).map((fl: any) => (
+                                <span
+                                  key={fl.type}
+                                  title={`${fl.label}${fl.daysOverdue ? ` · ${fl.daysOverdue}d overdue` : ''}${fl.daysUntilDue != null ? ` · ${fl.daysUntilDue}d until due` : ''}`}
+                                  className={`text-[9px] px-1 py-0 rounded font-medium ${fl.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}
+                                >
+                                  {fl.label}
+                                </span>
+                              ))}
+                              {s._flags.length > 3 && <span className="text-[9px] text-muted-foreground">+{s._flags.length - 3}</span>}
+                            </div>
+                          )}
+                        </div>
                       </td>
                       {/* 10. Actions */}
                       <td className="px-4 py-3 text-right">
@@ -562,6 +595,21 @@ export default function StaffDirectory({ user }: Props) {
                         {selectedDetail.status.replace('_', ' ')}
                       </span>
                     </DetailRow>
+                    {selectedDetail._flags && selectedDetail._flags.length > 0 && (
+                      <DetailRow label="Flags">
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {selectedDetail._flags.map((fl: any) => (
+                            <span
+                              key={fl.type}
+                              title={`${fl.label}${fl.daysOverdue ? ` · ${fl.daysOverdue}d overdue` : ''}${fl.daysUntilDue != null ? ` · ${fl.daysUntilDue}d until due` : ''}`}
+                              className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${fl.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}
+                            >
+                              {fl.label}{fl.daysOverdue ? ` · ${fl.daysOverdue}d` : ''}{fl.daysUntilDue != null ? ` · ${fl.daysUntilDue}d` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      </DetailRow>
+                    )}
                   </Section>
 
                   {/* Government Numbers */}

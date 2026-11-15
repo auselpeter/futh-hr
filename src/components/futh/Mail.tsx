@@ -229,7 +229,7 @@ export default function Mail({ user, title = 'Mail' }: Props) {
                         </div>
                         <div className="text-sm truncate">{m.subject}</div>
                         <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">
-                          {m.body?.replace(/\n.*$/s, '').slice(0, 100)}
+                          {m.body?.split('\n')[0].slice(0, 100)}
                         </div>
                         <div className="flex items-center gap-1 mt-1">
                           {!m.isRead && folder === 'inbox' && (

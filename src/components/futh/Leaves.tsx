@@ -36,7 +36,6 @@ import { printHTML, printHeader, signatureBox, formatDateForPrint, htmlEscape, r
 const statusColor: Record<string, string> = {
   Pending: 'bg-amber-100 text-amber-700',
   'HOU Approved': 'bg-blue-100 text-blue-700',
-  'HOD Approved': 'bg-cyan-100 text-cyan-700',
   'HOD Approved': 'bg-blue-100 text-blue-700',
   'Registry Received': 'bg-violet-100 text-violet-700',
   'Forwarded to DFA': 'bg-indigo-100 text-indigo-700',

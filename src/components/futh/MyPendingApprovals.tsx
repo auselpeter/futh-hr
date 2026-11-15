@@ -169,14 +169,14 @@ export default function MyPendingApprovals({ onNavigate, onOpenItem }: Props) {
     )
   }
 
-  const statCards: { type: PendingType; count: number }[] = [
+  const statCards: { type: PendingType; count: number }[] = ([
     { type: 'requisition', count: data.counts.requisitions },
     { type: 'file', count: data.counts.files },
     { type: 'leave', count: data.counts.leaves },
     { type: 'promotion', count: data.counts.promotions },
     { type: 'termination', count: data.counts.terminations },
     { type: 'resignation', count: data.counts.resignations },
-  ].filter((s) => s.count > 0)
+  ] as { type: PendingType; count: number }[]).filter((s) => s.count > 0)
 
   return (
     <Card className="border-amber-200 bg-amber-50/40 shadow-sm">

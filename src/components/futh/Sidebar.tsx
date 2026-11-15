@@ -28,6 +28,9 @@ import {
   FileBarChart,
   ArrowLeftRight,
   Files,
+  Clock,
+  ShieldAlert,
+  UserCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -43,14 +46,18 @@ export type ViewKey =
   | 'committees'
   | 'documents'
   | 'staff'
+  | 'staff-flags'
   | 'duties'
   | 'appraisals'
   | 'department-ratings'
   | 'leaves'
   | 'promotions'
+  | 'appointment-confirmations'
   | 'terminations'
   | 'resignations'
   | 'retirements'
+  | 'attendance'
+  | 'shifts'
   | 'payment-vouchers'
   | 'posting-transfer'
   | 'trainings'
@@ -80,14 +87,18 @@ const navItems: NavItem[] = [
   { key: 'committees', label: 'Committees', icon: Users2 },
   { key: 'documents', label: 'Documents', icon: Files },
   { key: 'staff', label: 'Staff Directory', icon: Users },
+  { key: 'staff-flags', label: 'Staff Flags', icon: ShieldAlert },
   { key: 'duties', label: 'Duties', icon: ListChecks },
   { key: 'appraisals', label: 'Appraisals & Reviews', icon: ClipboardList },
   { key: 'department-ratings', label: 'Department Ratings', icon: Award },
   { key: 'leaves', label: 'Leave Management', icon: Plane },
   { key: 'promotions', label: 'Promotions', icon: TrendingUp },
+  { key: 'appointment-confirmations', label: 'Appointment Confirmations', icon: UserCheck },
   { key: 'terminations', label: 'Terminations', icon: UserMinus },
   { key: 'resignations', label: 'Resignations', icon: DoorOpen },
   { key: 'retirements', label: 'Retirements', icon: HandCoins },
+  { key: 'attendance', label: 'Attendance', icon: Clock },
+  { key: 'shifts', label: 'Shifts', icon: Network },
   { key: 'payment-vouchers', label: 'Payment Vouchers', icon: Receipt },
   { key: 'posting-transfer', label: 'Posting & Transfer', icon: ArrowLeftRight },
   { key: 'trainings', label: 'Training', icon: GraduationCap },
