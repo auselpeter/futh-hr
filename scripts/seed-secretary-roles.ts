@@ -52,7 +52,7 @@ async function main() {
       altEmail: 'cmd_secretary_officer@futhlafia.gov.ng',
       deptCode: 'ADMIN',
     },
-  ] as const
+  ]
 
   const passwordHash = await bcrypt.hash('admin123', 10)
 

@@ -33,6 +33,9 @@ import PostingTransfer from '@/components/futh/PostingTransfer'
 import Trainings from '@/components/futh/Trainings'
 import Departments from '@/components/futh/Departments'
 import Units from '@/components/futh/Units'
+import Attendance from '@/components/futh/Attendance'
+import AppointmentConfirmations from '@/components/futh/AppointmentConfirmations'
+import StaffFlags from '@/components/futh/StaffFlags'
 import type { ViewKey } from '@/components/futh/Sidebar'
 import { Loader2 } from 'lucide-react'
 
@@ -128,14 +131,18 @@ export default function Home() {
         {view === 'documents' && <Documents user={user} />}
         {view === 'designations' && <Designations />}
         {view === 'staff' && <StaffDirectory user={user} />}
+        {view === 'staff-flags' && <StaffFlags user={user} onNavigate={handleNavigate} />}
         {view === 'duties' && <Appraisals user={user} onNavigate={handleNavigate} />}
         {view === 'appraisals' && <Appraisals user={user} onNavigate={handleNavigate} />}
         {view === 'department-ratings' && <DepartmentRatings user={user} />}
         {view === 'leaves' && <Leaves user={user} onNavigate={handleNavigate} />}
         {view === 'promotions' && <Promotions user={user} />}
+        {view === 'appointment-confirmations' && <AppointmentConfirmations user={user} />}
         {view === 'terminations' && <Terminations user={user} />}
         {view === 'resignations' && <Resignations user={user} />}
         {view === 'retirements' && <Retirements user={user} />}
+        {view === 'attendance' && <Attendance user={user} />}
+        {view === 'shifts' && <Attendance user={user} />}
         {view === 'payment-vouchers' && <PaymentVouchers user={user} />}
         {view === 'posting-transfer' && <PostingTransfer user={user} />}
         {view === 'trainings' && <Trainings user={user} />}

@@ -29,7 +29,7 @@ export async function GET(req: Request) {
       include: { department: { select: { id: true, code: true, name: true } }, _count: { select: { staff: true } } },
     })
 
-    const ratings = []
+    const ratings: any[] = []
     for (const u of units) {
       const dutyWhere: any = { staff: { unitId: u.id } }
       if (year) dutyWhere.period = { contains: periodStr }

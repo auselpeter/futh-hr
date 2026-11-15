@@ -3,7 +3,7 @@ import { db } from '@/lib/db'
 import { getCurrentUser, isAdmin, isRegistry } from '@/lib/auth'
 import { audit, getIp } from '@/lib/audit'
 
-const fullInclude = {
+const fullInclude: any = {
   department: true,
   designation: true,
   user: { select: { id: true, username: true, role: true, isActive: true } },
@@ -18,7 +18,10 @@ const fullInclude = {
   assessments: { orderBy: [{ period: 'desc' }], take: 5 },
   appraisals: { orderBy: [{ period: 'desc' }], take: 5 },
   leaves: { orderBy: [{ createdAt: 'desc' }], take: 10, include: { leaveType: true } },
-} as const
+  appointmentConfirmations: { orderBy: [{ createdAt: 'desc' }], take: 10 },
+  staffShifts: { include: { shift: true }, orderBy: [{ effectiveFrom: 'desc' }] },
+  attendanceRecords: { orderBy: [{ punchTime: 'desc' }], take: 30 },
+}
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {

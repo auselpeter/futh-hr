@@ -25,7 +25,7 @@ export type SafeUser = {
   twoFactorLastUsedAt: Date | null
   designation?: { id: string; code: string; name: string; rank: number; level: string } | null
   department?: { id: string; code: string; name: string; faculty: string | null } | null
-  staff?: { id: string; staffId: string; fullName: string; position: string | null; rank: string | null } | null
+  staff?: { id: string; staffId: string; fullName: string; position: string | null; rank: string | null; departmentId: string | null; unitId: string | null } | null
 }
 
 function toSafeUser(u: any): SafeUser {

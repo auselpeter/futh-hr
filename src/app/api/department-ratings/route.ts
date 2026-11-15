@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     })
 
     // For each department, count duties and average achieved score
-    const ratings = []
+    const ratings: any[] = []
     for (const d of departments) {
       const dutyWhere: any = { staff: { departmentId: d.id } }
       if (year) dutyWhere.period = { contains: periodStr }

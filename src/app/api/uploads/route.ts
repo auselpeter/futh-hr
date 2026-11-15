@@ -5,10 +5,19 @@ import { writeFile, mkdir } from 'fs/promises'
 import path from 'path'
 import { randomUUID } from 'crypto'
 
-const ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt']
-const MAX_SIZE = 10 * 1024 * 1024 // 10MB
+const ALLOWED_EXT = [
+  'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'rtf',
+  'zip', 'rar', '7z',
+]
+// Bumped from 10MB to 50MB so users can upload large scanned PDFs / high-res
+// passport photos without hitting the "unexpected end of JSON input" /
+// "unexpected tokens" error that the body parser threw on 10MB+ files.
+// For images, the client (FileUpload.tsx) compresses to ≤2MB before upload,
+// so the 50MB ceiling is mostly for non-image documents.
+const MAX_SIZE = 50 * 1024 * 1024 // 50MB
 
-const VALID_TYPES = ['staff', 'signature', 'thumbprint', 'certificate', 'duty', 'avatar', 'picture', 'general', 'document', 'evidence']
+const VALID_TYPES = ['staff', 'signature', 'thumbprint', 'certificate', 'duty', 'avatar', 'picture', 'general', 'document', 'evidence', 'attendance', 'confirmation']
 
 export async function POST(req: Request) {
   try {
@@ -24,7 +33,7 @@ export async function POST(req: Request) {
     }
 
     if (file.size > MAX_SIZE) {
-      return NextResponse.json({ error: 'File too large. Max 10MB' }, { status: 413 })
+      return NextResponse.json({ error: `File too large. Max ${MAX_SIZE / (1024 * 1024)}MB (received ${(file.size / (1024 * 1024)).toFixed(2)}MB)` }, { status: 413 })
     }
 
     const safeType = VALID_TYPES.includes(type) ? type : 'general'
@@ -51,6 +60,9 @@ export async function POST(req: Request) {
     })
   } catch (e: any) {
     console.error('Upload error:', e)
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
+    // Surface the underlying error message so the client can show a meaningful
+    // toast instead of the generic "Upload failed" — the previous behaviour
+    // masked payload-too-large / JSON-parse errors as "unexpected tokens".
+    return NextResponse.json({ error: e?.message || 'Upload failed' }, { status: 500 })
   }
 }

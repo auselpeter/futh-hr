@@ -14,7 +14,7 @@ import { generateTotpSecret, generateQrCodeDataUrl, isTwoFactorEnforced } from '
 // Returns { secret, otpauthUrl, qrDataUrl, enforced }.
 export async function POST(req: Request) {
   try {
-    let user = await getCurrentUser()
+    let user: any = await getCurrentUser()
 
     // Pre-auth flow: no session, but userId provided in body
     if (!user) {

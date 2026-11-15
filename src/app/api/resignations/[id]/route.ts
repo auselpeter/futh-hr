@@ -42,7 +42,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const { id } = await params
     const body = await req.json()
 
-    const existing = await db.resignation.findUnique({ where: { id } })
+    const existing = await db.resignation.findUnique({
+      where: { id },
+      include: { staff: { select: { id: true, userId: true, departmentId: true } } },
+    })
     if (!existing) return NextResponse.json({ error: 'Resignation not found' }, { status: 404 })
 
     const role = user.activeRole || user.role

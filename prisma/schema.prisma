@@ -203,6 +203,14 @@ model Department {
   code      String  @unique
   name      String
   faculty   String?
+  // Clinical departments deliver direct patient care (Surgery, Medicine, ICU, A&E,
+  // Paediatrics, O&G, etc.). Non-clinical departments are admin/support
+  // (HR, Finance, Admin, Works, ICT, Registry). Drives shift rules + attendance reports.
+  isClinical Boolean @default(false)
+  // For non-clinical departments, standard working hours are 08:00–16:00.
+  // Some support departments (Security, Lab-on-call, Works) keep shift-based rosters
+  // even though they are non-clinical — those are flagged via `isShiftBased`.
+  isShiftBased Boolean @default(false)
   hodUserId String? @unique
   hodUser   User?   @relation("DeptHOD", fields: [hodUserId], references: [id])
   isActive  Boolean @default(true)
@@ -218,6 +226,7 @@ model Department {
   trainings    Training[]
   projects     Project[]
   postingsTo   PostingTransfer[]
+  shifts       Shift[]
 }
 
 // Unit — a sub-division of a Department. E.g. ICU Unit under Internal Medicine,
@@ -379,6 +388,13 @@ model Staff {
 
   // Committee memberships — proper m2m via CommitteeMember join table
   committeeMemberships CommitteeMember[]
+
+  // Appointment confirmation workflow (lifecycle)
+  appointmentConfirmations AppointmentConfirmation[]
+
+  // Shift assignments + attendance records
+  staffShifts       StaffShift[]
+  attendanceRecords AttendanceRecord[]
 
   @@index([departmentId])
   @@index([status])
@@ -1853,3 +1869,205 @@ model Document {
   @@index([isPublic])
   @@index([fileNumber])
 }
+
+// ============================================================
+// APPOINTMENT CONFIRMATION — multi-step approval workflow
+// Mirrors Promotions/Resignations. Confirmation due 2 years
+// after dateOfFirstAppointment (configurable).
+// Ref number: FUTH/CONF/YYYY/000001
+// Status: Draft | Submitted | HOD Approved | DFA Approved | CMD Approved | Rejected | Completed
+// ============================================================
+
+model AppointmentConfirmation {
+  id              String   @id @default(cuid())
+  refNumber       String   @unique // e.g. FUTH/CONF/2026/000001
+
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  // Key employment dates used to derive confirmation eligibility
+  dateOfFirstAppointment DateTime? // when the staff was first appointed
+  dateHired              DateTime? // when current engagement started (mirrors Staff.dateHired)
+  expectedConfirmationDate DateTime? // computed from dateOfFirstAppointment + serviceYears
+  actualConfirmationDate  DateTime? // set when status=Completed
+  serviceYearsRequired    Int      @default(2) // typically 2 years for permanent staff
+
+  // Position at time of confirmation
+  currentPosition String?
+  currentRank      String?
+  currentGradeLevel String?
+  currentDepartmentId String?
+  newGradeLevel      String?  // if confirmation comes with a step-up
+  newStep            String?
+
+  // Letter / supporting docs
+  confirmationLetterUrl String? // signed confirmation letter (PDF)
+  assessmentFormUrl     String? // HR assessment form
+  remarks               String?
+  justification         String?
+
+  // Status: Draft | Submitted | HOD Approved | DFA Approved | CMD Approved | Rejected | Completed
+  status          String   @default("Submitted")
+  state           String   @default("open")
+
+  // Approval signatures
+  hodId           String?
+  hodName         String?
+  hodSignatureUrl String?
+  hodRemarks      String?
+  hodSignedAt     DateTime?
+
+  dfaId           String?
+  dfaName         String?
+  dfaSignatureUrl String?
+  dfaRemarks      String?
+  dfaSignedAt     DateTime?
+
+  cmdId           String?
+  cmdName         String?
+  cmdSignatureUrl String?
+  cmdRemarks      String?
+  cmdSignedAt     DateTime?
+
+  rejectedById    String?
+  rejectedAt      DateTime?
+  rejectReason    String?
+
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([status])
+  @@index([expectedConfirmationDate])
+}
+
+// ============================================================
+// SHIFTS — configurable per-department shift definitions
+// Built-in shifts: early, late, night, call-duty.
+// Non-clinical departments default to a single 08:00–16:00 "standard" shift.
+// Admins can edit start/end times per shift per department.
+// ============================================================
+
+model Shift {
+  id           String   @id @default(cuid())
+  code         String   // e.g. EARLY, LATE, NIGHT, CALL, STANDARD
+  name         String   // e.g. "Early Shift", "Night Shift", "Call Duty"
+  description  String?
+
+  // Time window. Times stored as "HH:MM" 24h strings.
+  startTime    String   // e.g. "06:00"
+  endTime      String   // e.g. "14:00"
+  // Grace period (minutes) before a punch-in is flagged late or punch-out early
+  graceMinutes Int      @default(15)
+  // Crosses midnight? (e.g. night shift 22:00 → 06:00)
+  crossesMidnight Boolean @default(false)
+
+  // Type for shift classification in reports
+  type         String   @default("standard") // early | late | night | call-duty | standard
+
+  // Optional department binding. If null, this is the global template
+  // (e.g. the hospital-wide default "EARLY" shift). When bound to a department,
+  // it overrides the global template for that department.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  // For call-duty: staff is on-call outside normal shift hours
+  isCallDuty   Boolean  @default(false)
+
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  staffShifts  StaffShift[]
+  attendance   AttendanceRecord[]
+
+  @@index([departmentId])
+  @@index([type])
+}
+
+// ============================================================
+// STAFF SHIFT ASSIGNMENT — many-to-many between Staff and Shift.
+// A staff member can have one active shift at a time per period
+// (clinicians typically rotate weekly). Captures effectiveFrom / effectiveTo.
+// ============================================================
+
+model StaffShift {
+  id           String   @id @default(cuid())
+  staffId      String
+  staff        Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  shiftId      String
+  shift        Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  effectiveFrom DateTime
+  effectiveTo  DateTime? // null = ongoing
+  isActive     Boolean  @default(true)
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([staffId, effectiveFrom])
+  @@index([staffId])
+  @@index([shiftId])
+}
+
+// ============================================================
+// ATTENDANCE — punch records pulled from ZKTeco device
+// (192.168.1.200:4370) and/or CSV import.
+// ============================================================
+
+model AttendanceRecord {
+  id            String   @id @default(cuid())
+
+  staffId       String
+  staff         Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  // Punch details (from ZKTeco logs)
+  punchTime     DateTime // timestamp of the punch
+  punchType     String   @default("in") // in | out | break_in | break_out
+  verifyMode    Int?     // 0=password, 1=fingerprint, 2=card, 4=face
+  inOutMode     Int?     // 0=in, 1=out (ZKTeco's own in/out flag)
+  workCode      Int?     // ZKTeco work code
+  deviceId      String?  // which device recorded the punch (e.g. "192.168.1.200")
+
+  // Derived/computed fields
+  shiftId       String?
+  shift         Shift?   @relation(fields: [shiftId], references: [id])
+  // Status: on_time | late | early_leave | absent | overtime | off_duty
+  status        String   @default("on_time")
+  // Minutes late (if punchType=in and after shift start + grace) or minutes early-leave
+  minutesLate   Int?
+  minutesEarly  Int?
+  // Total hours worked for the day (computed from in/out pairs)
+  hoursWorked   Float?
+
+  // Punch source
+  source        String   @default("device") // device | manual | csv_import | api
+
+  // For pairing in/out punches
+  pairedWith    String?  // ID of the corresponding in/out record
+  day           String   // YYYY-MM-DD — the working day this punch belongs to (for night shifts crossing midnight, this is the day the shift started)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([punchTime])
+  @@index([day])
+  @@index([status])
+  @@index([shiftId])
+  @@index([deviceId])
+}
+
+// ============================================================
+// STAFF FLAGS — virtual flags computed at query time
+// (NOT materialized). Returned by /api/staff/flags endpoint.
+// Flag types:
+//   - confirmation_due   : confirmationDate unset and >= 2 years since dateHired
+//   - confirmation_overdue: confirmationDate unset and > 2 years 3 months since dateHired
+//   - promotion_due      : >= 3 years since last promotion
+//   - promotion_overdue  : > 3 years 3 months since last promotion
+//   - retirement_due     : retirementDate within 90 days
+//   - retirement_overdue : retirementDate in the past (and status != retired)
+// ============================================================
+// NOTE: No table is created — flags are computed on the fly by the API.
+

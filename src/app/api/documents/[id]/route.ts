@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getCurrentUser } from '@/lib/auth'
 import { audit, getIp } from '@/lib/audit'
+import { unlink } from 'fs/promises'
+import path from 'path'
 
 // Permission helper: who can upload any document category (manager-level)?
 const MANAGER_ROLES = ['SUPER_ADMIN', 'ADMIN', 'REGISTRY_OFFICER', 'SECRETARY', 'CMD_SECRETARY', 'AD']
@@ -110,8 +112,24 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       return NextResponse.json({ error: 'You can only delete your own uploaded documents' }, { status: 403 })
     }
 
+    // Delete the underlying file from public/uploads/{type}/{file}
+    // (best-effort — if the file is already gone, we still drop the DB record).
+    if (existing.fileUrl && existing.fileUrl.startsWith('/uploads/')) {
+      const absPath = path.join(process.cwd(), 'public', existing.fileUrl)
+      await unlink(absPath).catch(() => {})
+    }
+
+    // If the deleted document was the staff's avatar or signature, clear the link
+    // on the Staff record too so the directory doesn't show a broken image.
+    if (existing.staffId && existing.category === 'personal_image') {
+      await db.staff.update({ where: { id: existing.staffId }, data: { avatarUrl: null } }).catch(() => {})
+    }
+    if (existing.staffId && existing.category === 'personal_signature') {
+      await db.staff.update({ where: { id: existing.staffId }, data: { signatureUrl: null } }).catch(() => {})
+    }
+
     await db.document.delete({ where: { id } })
-    await audit(user, 'delete', { entity: 'Document', entityId: id, details: `Deleted document "${existing.title}"`, ipAddress: getIp(req) })
+    await audit(user, 'delete', { entity: 'Document', entityId: id, details: `Deleted document "${existing.title}" (file: ${existing.fileName})`, ipAddress: getIp(req) })
     return NextResponse.json({ success: true })
   } catch (e: any) {
     console.error('Document delete error:', e)

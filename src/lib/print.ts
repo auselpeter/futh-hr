@@ -197,7 +197,7 @@ export function registryCoverSheetHTML(opts: {
   // Build 4-column groups of entries. Each group of 4 entries = 1 row.
   // We render 4 such groups across the page = 16 entries total.
   const buildGroupRow = (startIndex: number) => {
-    const cells = []
+    const cells: string[] = []
     for (let i = 0; i < NUM_COLUMNS; i++) {
       const entry = routeEntries[startIndex + i] || { to: '', page: '', date: '', sign: '' }
       cells.push(`
@@ -233,7 +233,7 @@ export function registryCoverSheetHTML(opts: {
   }
 
   // Header row: TO | PAGE | DATE | SIGN repeated 4 times
-  const headerCells = []
+  const headerCells: string[] = []
   for (let g = 0; g < NUM_GROUPS; g++) {
     headerCells.push(`
       <td style="width: 25%; padding: 0; border: 1px solid #888;">
@@ -250,7 +250,7 @@ export function registryCoverSheetHTML(opts: {
   }
 
   // Build 4 rows (one per group of 4 entries) — each row spans 4 column-groups
-  const rowsHtml = []
+  const rowsHtml: string[] = []
   for (let row = 0; row < 4; row++) {
     const startIndex = row * NUM_COLUMNS
     rowsHtml.push(`<tr>${buildGroupRow(startIndex)}</tr>`)

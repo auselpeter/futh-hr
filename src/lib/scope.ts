@@ -25,6 +25,8 @@ export type EntityType =
   | 'project'
   | 'unit'
   | 'report'
+  | 'attendance'
+  | 'appointmentConfirmation'
 
 /**
  * Returns the set of fields that exist on a given entity type for self-scope.
@@ -77,6 +79,7 @@ function selfScopeFields(user: SafeUser, entity: EntityType): any[] {
     case 'resignation':
     case 'retirement':
     case 'postingTransfer':
+    case 'appointmentConfirmation':
       return [
         { createdById: meId },
         { staff: { userId: meId } },
@@ -100,6 +103,7 @@ function selfScopeFields(user: SafeUser, entity: EntityType): any[] {
       ]
     case 'unit':
     case 'report':
+    case 'attendance':
       return []
   }
 }
@@ -113,16 +117,17 @@ export function buildScopeFilter(user: SafeUser | null, entity: EntityType): any
 
   const role = user.activeRole || user.role
   const deptId = user.departmentId
+  const meId = user.id
 
   // All-seeing roles: no filter
   if (['SUPER_ADMIN', 'ADMIN', 'PLANNING_OFFICER', 'CMD', 'CMA', 'DFA', 'AD', 'DESK_OFFICER', 'AUDIT_OFFICER', 'CPO'].includes(role)) {
     return {}
   }
 
-  // HR-lifecycle entities (promotion / termination / resignation / retirement / postingTransfer) — these have
+  // HR-lifecycle entities (promotion / termination / resignation / retirement / postingTransfer / appointmentConfirmation) — these have
   // a `staff` relation but no top-level `departmentId`, so the filters below
   // scope by `staff.departmentId` for HOD / HOU / AD / DFA.
-  if (entity === 'promotion' || entity === 'termination' || entity === 'resignation' || entity === 'retirement' || entity === 'postingTransfer') {
+  if (entity === 'promotion' || entity === 'termination' || entity === 'resignation' || entity === 'retirement' || entity === 'postingTransfer' || entity === 'appointmentConfirmation') {
     // DFA sees all HR-lifecycle records (they approve them financially)
     if (role === 'DFA') return {}
     // AD sees all HR-lifecycle records (administrative oversight)
@@ -140,6 +145,22 @@ export function buildScopeFilter(user: SafeUser | null, entity: EntityType): any
     }
     // STAFF (and any other role) — only their own records
     return { OR: selfScopeFields(user, entity) }
+  }
+
+  // Attendance — same scoping rules as HR-lifecycle (HOD/HOU see their dept's
+  // punches; STAFF see only their own; admins/SUPER see all).
+  if (entity === 'attendance') {
+    if (['DFA', 'AD', 'APPRAISAL_OFFICER', 'REGISTRY_OFFICER'].includes(role)) return {}
+    if (role === 'HOD' || role === 'HOU') {
+      return {
+        OR: [
+          { staff: { departmentId: deptId || undefined } },
+          { staff: { userId: meId } },
+        ],
+      }
+    }
+    // STAFF — only their own punches
+    return { staff: { userId: meId } }
   }
 
   // Payment vouchers — DFA, AD, AUDIT_OFFICER, DESK_OFFICER, CPO see all PVs

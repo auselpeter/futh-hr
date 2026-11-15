@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}))
     const { code, userId: bodyUserId } = body || {}
 
-    let user = await getCurrentUser()
+    let user: any = await getCurrentUser()
 
     if (!user) {
       const userId = bodyUserId

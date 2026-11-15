@@ -83,7 +83,7 @@ async function main() {
   // First pass: identify which users need a reset (no bcrypt comparison — we
   // assume any bulk-imported user needs to be reset, since they were all
   // created with IPPIS as the password, not admin123).
-  const candidates: typeof users = []
+  const candidates: any[] = []
   for (const u of users) {
     if (SKIP_USERNAMES.has(u.username)) {
       skippedDemo++

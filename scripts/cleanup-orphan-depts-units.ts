@@ -62,11 +62,10 @@ async function main() {
       continue
     }
     if (!dryRun) {
-      // Detach HOU if any
+      // Detach HOU if any — the Unit.houUserId field holds the HOU relation.
+      // We clear it first (in case of unique-constraint edge cases) then delete the unit.
       if (unit.houUserId) {
-        // Just delete the unit — the User.headedUnit relation has SetNull default
-        // Actually, the relation is one-to-one with @unique — let's just clear it
-        await prisma.user.update({ where: { id: unit.houUserId }, data: { headedUnitId: null } }).catch(() => {})
+        await prisma.unit.update({ where: { id: unit.id }, data: { houUserId: null } }).catch(() => {})
       }
       await prisma.unit.delete({ where: { id: unit.id } })
     }
